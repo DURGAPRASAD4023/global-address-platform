@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: gap-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gap_dev_password_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-global_address}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gap} -d ${POSTGRES_DB:-global_address}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: gap-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gap-backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-gap}:${POSTGRES_PASSWORD:-gap_dev_password_change_me}@postgres:5432/${POSTGRES_DB:-global_address}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: gap-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    command: npm run dev
+
+  # Optional: enable with `docker compose --profile workers up`
+  worker:
+    profiles: ["workers"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gap-worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-gap}:${POSTGRES_PASSWORD:-gap_dev_password_change_me}@postgres:5432/${POSTGRES_DB:-global_address}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m app.workers.runner
+
+volumes:
+  postgres_data:
+  redis_data:
