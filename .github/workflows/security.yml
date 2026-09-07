@@ -1,0 +1,19 @@
+name: Security
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret scan placeholder
+        run: |
+          echo "Add gitleaks / dependency review in Phase 9 hardening."
+          if grep -R --include='*.py' --include='*.ts' --include='*.tsx' -E 'SUPABASE_SERVICE_ROLE_KEY\s*=\s*["'\''][^"'\'']+' . ; then
+            echo "Possible hardcoded service role key" && exit 1
+          fi
+          echo "No hardcoded service-role assignments detected."

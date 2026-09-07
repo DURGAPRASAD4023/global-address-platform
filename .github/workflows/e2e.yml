@@ -1,0 +1,16 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder
+        run: |
+          echo "Playwright E2E lands in Phase 9 after generate/validate flows are live."
+          echo "Scaffold reserved for smoke tests against docker compose."

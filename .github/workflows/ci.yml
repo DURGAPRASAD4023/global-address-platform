@@ -1,0 +1,10 @@
+name: Full CI
+on: [push, pull_request]
+
+jobs:
+  backend:
+    uses: ./.github/workflows/backend-ci.yml
+    secrets: inherit
+  frontend:
+    uses: ./.github/workflows/frontend-ci.yml
+    secrets: inherit
