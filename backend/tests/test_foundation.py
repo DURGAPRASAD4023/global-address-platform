@@ -77,3 +77,14 @@ def test_map_links_endpoint() -> None:
 def test_request_id_header_present() -> None:
     response = client.get("/api/v1/health")
     assert "X-Request-ID" in response.headers
+
+
+def test_search_place_seed_match() -> None:
+    response = client.post("/api/v1/addresses/search", json={"query": "White House", "country": "US"})
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert "1600 Pennsylvania" in body["address_line_1"]
+    assert body["city"] == "Washington"
+    assert body["address_line_2"] is not None
+    assert body["coordinates"]["latitude"] is not None
+

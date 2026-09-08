@@ -102,68 +102,172 @@ class SeedBackedAdapter(CountryAddressAdapter):
         if not raw:
             raise AppError("EMPTY_ADDRESS", "Address text is empty.", status_code=422)
 
-        lines = [ln.strip(" ,") for ln in raw.replace(",", "\n").split("\n") if ln.strip()]
-        # Also support single-line comma separated already split above
-        if len(lines) == 1 and "," in raw_address:
-            lines = [p.strip() for p in raw_address.split(",") if p.strip()]
-
-        postal: str | None = None
-        region: str | None = None
-        city: str | None = None
-        house_number: str | None = None
-        street: str | None = None
-        unit: str | None = None
-
-        pattern = self._rules.postal_code_regex
-        remaining: list[str] = []
-        for line in lines:
-            if pattern and postal is None:
-                m = re.search(pattern, line, flags=re.IGNORECASE)
-                if m:
-                    postal = m.group(0).upper() if self.country_code in {"CA", "GB"} else m.group(0)
-                    line = (line[: m.start()] + line[m.end() :]).strip(" ,")
-            remaining.append(line) if line else None
-
-        remaining = [r for r in remaining if r]
-
-        # Drop trailing country name if present
-        if remaining and remaining[-1].lower() in {
+        # 1. Prepare country aliases to cleanly strip if present at the end
+        country_aliases = {
             self.country_name.lower(),
             self.country_code.lower(),
-        }:
-            remaining = remaining[:-1]
+        }
+        if self.country_code == "GB":
+            country_aliases.update(["uk", "united kingdom", "great britain", "england", "scotland", "wales"])
+        elif self.country_code == "US":
+            country_aliases.update(["usa", "united states", "united states of america", "u.s.a.", "u.s."])
+        elif self.country_code == "CA":
+            country_aliases.update(["canada"])
+        elif self.country_code == "DE":
+            country_aliases.update(["germany", "deutschland"])
+        elif self.country_code == "IN":
+            country_aliases.update(["india", "bharat"])
 
-        if remaining:
-            first = remaining[0]
-            hm = re.match(r"^(\d+[A-Za-z]?)\s+(.+)$", first)
-            if hm:
-                house_number = hm.group(1)
-                street = hm.group(2)
+        cleaned_text = raw
+        postal: str | None = None
+        pattern = self._rules.postal_code_regex
+
+        # 2. Extract Postal Code from anywhere in the text
+        if pattern:
+            inner_pattern = pattern.lstrip("^").rstrip("$")
+            matches = list(re.finditer(rf"\b(?:{inner_pattern})\b", cleaned_text, flags=re.IGNORECASE))
+            if matches:
+                # Prefer the match closest to the end (standard postal position)
+                m = matches[-1]
+                val = m.group(0).strip()
+                postal = val.upper() if self.country_code in {"CA", "GB"} else val
+                # Remove the postal code from the text
+                cleaned_text = (cleaned_text[: m.start()] + " " + cleaned_text[m.end() :]).strip()
+
+        # 3. Strip trailing country name if present
+        for alias in sorted(country_aliases, key=len, reverse=True):
+            escaped = re.escape(alias)
+            m = re.search(rf"(?:,\s*|\s+){escaped}\s*$", cleaned_text, flags=re.IGNORECASE)
+            if m:
+                cleaned_text = cleaned_text[: m.start()].strip(" ,;")
+                break
+
+        # 4. Tokenize by newlines, commas, or semicolons
+        tokens = [t.strip(" ,;") for t in re.split(r"[\n,;]+", cleaned_text) if t.strip(" ,;")]
+
+        # Seed data lookup for high-accuracy city & region identification
+        seeds = get_country_seeds(self.country_code)
+        seed_cities = {s.get("city") for s in seeds if s.get("city")}
+        seed_regions = {s.get("region") for s in seeds if s.get("region")}
+
+        unit: str | None = None
+        house_number: str | None = None
+        street: str | None = None
+        city: str | None = None
+        region: str | None = None
+        landmark: str | None = None
+
+        # If single line with no commas (e.g. "10 Downing St London"):
+        if len(tokens) == 1:
+            single = tokens[0]
+            found_city = None
+            for sc in seed_cities:
+                if sc and re.search(rf"\b{re.escape(sc)}\b", single, flags=re.IGNORECASE):
+                    m = re.search(rf"\s+{re.escape(sc)}\s*$", single, flags=re.IGNORECASE)
+                    if m:
+                        found_city = sc
+                        single = single[: m.start()].strip()
+                        break
+            if found_city:
+                city = found_city
+                tokens = [single]
             else:
-                um = re.match(r"^(apt|apartment|unit|suite|flat)\s+(.+)$", first, re.I)
-                if um:
-                    unit = first
-                else:
-                    street = first
+                words = single.split()
+                if len(words) >= 3 and words[-1].isalpha() and words[-1][0].isupper():
+                    city = words[-1]
+                    tokens = [" ".join(words[:-1])]
 
-        if len(remaining) >= 2:
-            city = remaining[-1] if not region else remaining[-2]
-            # Heuristic: penultimate may be city; last may be region+postal already stripped
-            if len(remaining) >= 3:
-                city = remaining[-2]
-                region = remaining[-1]
-            elif len(remaining) == 2:
-                city = remaining[1]
+        # 5. Extract Unit / Flat / Apartment if present
+        unit_pattern = re.compile(
+            r"^(apt|apartment|unit|suite|flat|floor|room|bldg|building|block|p\.?o\.?\s*box|h\.?no\.?|plot)\s*(#|no\.?)?\s*([A-Za-z0-9\-]+)?",
+            re.IGNORECASE,
+        )
+        filtered_tokens: list[str] = []
+        for t in tokens:
+            if unit_pattern.match(t) and unit is None and len(t) < 35:
+                unit = t
+            else:
+                filtered_tokens.append(t)
+        tokens = filtered_tokens
 
-        # Country-specific tweaks via hook
+        # 6. Identify City and Region from tokens
+        rem_tokens: list[str] = []
+        for t in tokens:
+            # Check for European-style "10117 Berlin" where postal was removed, leaving just the city
+            t_clean = t.strip()
+            matched = False
+            for sc in seed_cities:
+                if sc and sc.lower() == t_clean.lower():
+                    city = sc
+                    matched = True
+                    break
+            if matched:
+                continue
+            for sr in seed_regions:
+                if sr and sr.lower() == t_clean.lower():
+                    region = sr
+                    matched = True
+                    break
+            if matched:
+                continue
+            rem_tokens.append(t_clean)
+
+        # 7. Parse Street and House Number from line 1
+        if rem_tokens:
+            first = rem_tokens[0]
+            hm_start = re.match(r"^(\d+[A-Za-z]?|\d+-\d+)\s+(.+)$", first)
+            hm_end = re.match(r"^(.+?)\s+(\d+[A-Za-z]?)$", first)
+
+            if hm_start:
+                house_number = hm_start.group(1)
+                street = hm_start.group(2)
+            elif hm_end and not re.search(
+                r"\b(street|road|st|ave|boulevard|blvd|lane|court|place|platz|rue|way)\b",
+                hm_end.group(2),
+                re.I,
+            ):
+                house_number = hm_end.group(2)
+                street = hm_end.group(1)
+            else:
+                street = first
+
+            other_tokens = rem_tokens[1:]
+            if other_tokens:
+                if not city and not region:
+                    if len(other_tokens) == 1:
+                        city = other_tokens[0]
+                    elif len(other_tokens) == 2:
+                        city = other_tokens[0]
+                        region = other_tokens[1]
+                    else:
+                        landmark = other_tokens[0]
+                        city = other_tokens[1]
+                        region = " ".join(other_tokens[2:])
+                elif not city and region:
+                    city = other_tokens[-1]
+                    if len(other_tokens) > 1 and not landmark:
+                        landmark = other_tokens[0]
+                elif city and not region:
+                    region = other_tokens[-1]
+                    if len(other_tokens) > 1 and not landmark:
+                        landmark = other_tokens[0]
+                elif city and region:
+                    if not landmark:
+                        landmark = " ".join(other_tokens)
+
+        # 8. Build AddressComponents
+        address_line_1: str | None = None
+        if house_number and street:
+            address_line_1 = f"{house_number} {street}".strip()
+        elif street:
+            address_line_1 = street.strip()
+        elif rem_tokens:
+            address_line_1 = rem_tokens[0].strip()
+
         components = AddressComponents(
             country=self.country_name,
             country_code=self.country_code,
-            address_line_1=(
-                f"{house_number} {street}".strip()
-                if (house_number and street)
-                else (street or (remaining[0] if remaining else None))
-            ),
+            address_line_1=address_line_1,
             address_line_2=unit,
             house_number=house_number,
             street=street,
@@ -171,8 +275,9 @@ class SeedBackedAdapter(CountryAddressAdapter):
             city=city,
             region=region,
             postal_code=postal,
+            landmark=landmark,
         )
-        return self._post_parse(raw, lines, components)
+        return self._post_parse(raw, tokens, components)
 
     def _post_parse(
         self,
@@ -297,11 +402,19 @@ class SeedBackedAdapter(CountryAddressAdapter):
 
     async def generate(self) -> GeneratedAddress:
         seed = random.choice(self._seeds())
+        line2 = seed.get("address_line_2")
+        if not line2:
+            notes = seed.get("notes")
+            if notes and notes != seed.get("address_line_1"):
+                line2 = notes
+            else:
+                line2 = random.choice(["Suite 100", "Building A", "Floor 2", "Wing B", "Level 1"])
+
         components = AddressComponents(
             country=self.country_name,
             country_code=self.country_code,
             address_line_1=seed.get("address_line_1"),
-            address_line_2=seed.get("address_line_2"),
+            address_line_2=line2,
             city=seed.get("city"),
             region=seed.get("region"),
             postal_code=seed.get("postal_code") or None,

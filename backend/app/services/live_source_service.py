@@ -167,14 +167,21 @@ class LiveAddressSource:
         region = addr.get("state") or addr.get("county") or addr.get("province") or addr.get("state_district")
         postal_code = addr.get("postcode")
 
-        lat = raw.get("lat")
-        lon = raw.get("lon")
-        if not lat or not lon:
-            return None
+        suburb = (
+            addr.get("suburb")
+            or addr.get("neighbourhood")
+            or addr.get("city_district")
+            or addr.get("quarter")
+            or addr.get("hamlet")
+        )
+        line2 = suburb or (name if (name and name != line1) else None)
+        if not line2:
+            secondary_units = ["Suite 200", "Floor 3", "Unit 4B", "Level 2", "Building A"]
+            line2 = random.choice(secondary_units)
 
         return {
             "address_line_1": line1,
-            "address_line_2": None,
+            "address_line_2": line2,
             "city": city,
             "region": region,
             "postal_code": postal_code,
@@ -185,14 +192,54 @@ class LiveAddressSource:
             "source": "openstreetmap_live",
         }
 
+    async def search_place(self, query: str, country_code: str | None = None) -> dict[str, Any] | None:
+        url = "https://nominatim.openstreetmap.org/search"
+        headers = {
+            "User-Agent": "GlobalAddressPlatform/1.0 (https://global-address-platform.local; contact@gap.dev)",
+            "Accept": "application/json",
+        }
+        params: dict[str, str] = {
+            "format": "json",
+            "q": query,
+            "addressdetails": "1",
+            "limit": "3",
+        }
+        if country_code:
+            params["countrycodes"] = country_code.lower()
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.get(url, params=params, headers=headers)
+                if res.status_code == 200:
+                    items = res.json()
+                    for item in items:
+                        candidate_cc = (item.get("address", {}).get("country_code") or country_code or "GB").upper()
+                        parsed = self._extract_candidate(item, candidate_cc)
+                        if parsed:
+                            parsed["landmark"] = item.get("name") or query
+                            parsed["country_code"] = candidate_cc
+                            parsed["country"] = item.get("address", {}).get("country")
+                            parsed["source"] = "global_place_search"
+                            return parsed
+        except Exception as exc:
+            logger.info("osm_search_exception", query=query, error=str(exc))
+        return None
+
     def _fallback_seed(self, cc: str) -> dict[str, Any]:
         seeds = get_country_seeds(cc)
         if seeds:
             s = dict(random.choice(seeds))
             s["source"] = "curated_seed"
+            if not s.get("address_line_2"):
+                notes = s.get("notes")
+                if notes and notes != s.get("address_line_1"):
+                    s["address_line_2"] = notes
+                else:
+                    s["address_line_2"] = random.choice(["Suite 100", "Building A", "Floor 2", "Wing B"])
             return s
         return {
             "address_line_1": "Central Plaza",
+            "address_line_2": "Suite 100",
             "city": "Capital City",
             "region": None,
             "postal_code": None,

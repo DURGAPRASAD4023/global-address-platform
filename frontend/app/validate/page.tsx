@@ -3,6 +3,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
+  Building2,
   Check,
   CheckCircle2,
   CircleAlert,
@@ -26,28 +27,33 @@ import type { Country } from "@/types/address";
 const PRESET_SAMPLES = [
   {
     country: "GB",
-    label: "🇬🇧 British Museum, London",
+    label: "🇬🇧 British Museum (Multi-line)",
     address: "Great Russell Street\nLondon, England, WC1B 3DG\nUnited Kingdom",
   },
   {
     country: "GB",
-    label: "🇬🇧 10 Downing St, London",
-    address: "10 Downing St\nLondon, SW1A 2AA\nUnited Kingdom",
+    label: "🇬🇧 10 Downing St (Single-line)",
+    address: "10 Downing St London SW1A 2AA",
   },
   {
     country: "US",
-    label: "🇺🇸 White House, DC",
+    label: "🇺🇸 White House (US Format)",
     address: "1600 Pennsylvania Avenue NW\nWashington, DC 20500\nUnited States",
   },
   {
+    country: "DE",
+    label: "🇩🇪 Pariser Platz (European)",
+    address: "Pariser Platz 1, 10117 Berlin, Germany",
+  },
+  {
     country: "CA",
-    label: "🇨🇦 CN Tower, Toronto",
+    label: "🇨🇦 CN Tower (Canada)",
     address: "290 Bremner Blvd\nToronto, ON M5V 3L9\nCanada",
   },
   {
-    country: "DE",
-    label: "🇩🇪 Brandenburg Gate, Berlin",
-    address: "Pariser Platz\n10117 Berlin\nGermany",
+    country: "IN",
+    label: "🇮🇳 Rajpath, New Delhi (India)",
+    address: "Rajpath, New Delhi 110001, India",
   },
 ];
 
@@ -364,9 +370,57 @@ export default function ValidatePage() {
                   </div>
                 </div>
 
-                <pre className="mt-4 overflow-auto rounded-lg bg-ink-950 p-4 font-mono text-xs leading-6 text-ink-50 shadow-inner">
-                  {normalized.formatted_address}
-                </pre>
+                {/* Prominent Address Line 1 and Line 2 breakdown */}
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border border-teal-200 bg-white p-3 shadow-xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-teal-800">
+                      <span className="flex items-center gap-1.5">
+                        <Building2 className="h-3.5 w-3.5 text-teal-600" />
+                        Address Line 1
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(normalized.address_line_1, "Address Line 1")}
+                        className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-800 transition hover:bg-teal-100"
+                      >
+                        {copiedField === "Address Line 1" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                        {copiedField === "Address Line 1" ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                    <p className="mt-1 font-mono text-sm font-bold text-ink-950">
+                      {normalized.address_line_1 || "—"}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border border-teal-200 bg-white p-3 shadow-xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-teal-800">
+                      <span className="flex items-center gap-1.5">
+                        <Compass className="h-3.5 w-3.5 text-teal-600" />
+                        Address Line 2 (Unit / Locality)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(normalized.address_line_2, "Address Line 2")}
+                        className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-800 transition hover:bg-teal-100"
+                      >
+                        {copiedField === "Address Line 2" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                        {copiedField === "Address Line 2" ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                    <p className="mt-1 font-mono text-sm font-bold text-ink-950">
+                      {normalized.address_line_2 || "— (None)"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-ink-500">
+                    Full Standardized Output:
+                  </div>
+                  <pre className="overflow-auto rounded-lg bg-ink-950 p-4 font-mono text-xs leading-6 text-ink-50 shadow-inner">
+                    {normalized.formatted_address}
+                  </pre>
+                </div>
 
                 {data?.notes && (
                   <div className="mt-3 flex items-center gap-2 rounded-md bg-teal-50/70 px-3 py-1.5 text-xs text-teal-900 border border-teal-200/60">

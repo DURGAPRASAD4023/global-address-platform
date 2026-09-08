@@ -7,11 +7,9 @@ import { Footer } from "@/components/layout/Footer";
 
 const nav = [
   { href: "/", label: "Dashboard" },
-  { href: "/lab", label: "Address Lab" },
-  { href: "/tests", label: "Testing" },
   { href: "/generate", label: "Generate" },
   { href: "/validate", label: "Validate" },
-  { href: "/history", label: "History" },
+  { href: "/lab", label: "Address Lab" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

@@ -114,3 +114,126 @@ class GenerationService:
                 "last_error": str(last_error),
             },
         )
+
+    async def search_place(self, query: str, country_code: str | None = None) -> GeneratedAddress:
+        clean_query = query.strip()
+        if not clean_query:
+            raise AppError("EMPTY_QUERY", "Search query cannot be empty.", status_code=422)
+
+        from app.services.live_source_service import LiveAddressSource
+
+        # 1. Live OpenStreetMap Search
+        candidate = await LiveAddressSource().search_place(clean_query, country_code=country_code)
+        if candidate:
+            cc = candidate.get("country_code") or (country_code.upper() if country_code else "GB")
+            adapter = CountryRegistry.get(cc)
+            components = AddressComponents(
+                country=candidate.get("country") or adapter.country_name,
+                country_code=cc,
+                address_line_1=candidate.get("address_line_1"),
+                address_line_2=candidate.get("address_line_2"),
+                city=candidate.get("city"),
+                region=candidate.get("region"),
+                postal_code=candidate.get("postal_code"),
+                landmark=candidate.get("landmark"),
+            )
+            normalized = adapter.normalize(components)
+            validation = adapter.validate(normalized)
+            lat = candidate.get("latitude")
+            lon = candidate.get("longitude")
+            coords = Coordinates(latitude=lat, longitude=lon) if (lat is not None and lon is not None) else None
+            formatted = normalized.formatted_address or adapter.format(normalized)
+
+            return GeneratedAddress(
+                country=normalized.country or adapter.country_name,
+                country_code=cc,
+                address_line_1=normalized.address_line_1 or "",
+                address_line_2=normalized.address_line_2,
+                city=normalized.city,
+                region=normalized.region,
+                postal_code=normalized.postal_code,
+                formatted_address=formatted,
+                coordinates=coords,
+                geocoding_provider="openstreetmap_nominatim",
+                geocoding_status="verified",
+                map_verification_status="verified",
+                map_links=MapService().links(coords.latitude, coords.longitude, label=formatted) if coords else {},
+                validation=ValidationStatus(
+                    format_valid=True,
+                    postal_valid=validation.postal_valid,
+                    geographic_valid=True,
+                    geocoded=bool(coords),
+                    map_verified=bool(coords),
+                    deliverability_verified=False,
+                ),
+                source="global_place_search",
+                landmark=candidate.get("landmark") or clean_query,
+            )
+
+        # 2. Curated Seed Search Fallback
+        from app.data.loader import load_seed_file
+        all_seeds = load_seed_file()
+        q_lower = clean_query.lower()
+        matched_seed = None
+        seed_cc = None
+
+        for cc_key, cc_data in all_seeds.get("countries", {}).items():
+            if country_code and cc_key.upper() != country_code.upper():
+                continue
+            for loc in cc_data.get("locations", []):
+                notes = (loc.get("notes") or "").lower()
+                l1 = (loc.get("address_line_1") or "").lower()
+                c = (loc.get("city") or "").lower()
+                if q_lower in notes or notes in q_lower or q_lower in l1 or q_lower in c:
+                    matched_seed = loc
+                    seed_cc = cc_key
+                    break
+            if matched_seed:
+                break
+
+        if matched_seed and seed_cc:
+            adapter = CountryRegistry.get(seed_cc)
+            line2 = matched_seed.get("address_line_2") or matched_seed.get("notes")
+            components = AddressComponents(
+                country=adapter.country_name,
+                country_code=seed_cc,
+                address_line_1=matched_seed.get("address_line_1"),
+                address_line_2=line2,
+                city=matched_seed.get("city"),
+                region=matched_seed.get("region"),
+                postal_code=matched_seed.get("postal_code"),
+                landmark=matched_seed.get("notes"),
+            )
+            normalized = adapter.normalize(components)
+            coords = Coordinates(latitude=float(matched_seed["latitude"]), longitude=float(matched_seed["longitude"])) if matched_seed.get("latitude") else None
+            formatted = normalized.formatted_address or adapter.format(normalized)
+            return GeneratedAddress(
+                country=adapter.country_name,
+                country_code=seed_cc,
+                address_line_1=normalized.address_line_1 or "",
+                address_line_2=normalized.address_line_2,
+                city=normalized.city,
+                region=normalized.region,
+                postal_code=normalized.postal_code,
+                formatted_address=formatted,
+                coordinates=coords,
+                geocoding_provider="curated_seed",
+                geocoding_status="verified",
+                map_verification_status="verified",
+                map_links=MapService().links(coords.latitude, coords.longitude, label=formatted) if coords else {},
+                validation=ValidationStatus(
+                    format_valid=True,
+                    postal_valid=True,
+                    geographic_valid=True,
+                    geocoded=bool(coords),
+                    map_verified=bool(coords),
+                ),
+                source="curated_seed",
+                landmark=matched_seed.get("notes"),
+            )
+
+        raise AppError(
+            "PLACE_NOT_FOUND",
+            f"No verified address found for '{clean_query}'. Please check the spelling or add a city name.",
+            status_code=404,
+        )

@@ -41,4 +41,10 @@ export const api = {
       "/api/v1/batches/validate",
       { method: "POST", body: JSON.stringify({ country, addresses }) },
     ),
+
+  searchPlace: (query: string, country?: string) =>
+    request<unknown>("/api/v1/addresses/search", {
+      method: "POST",
+      body: JSON.stringify({ query, country: country || undefined }),
+    }),
 };
