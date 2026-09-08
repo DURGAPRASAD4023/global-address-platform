@@ -121,8 +121,8 @@ export default function ValidatePage() {
         Validate an Address
       </h1>
       <p className="mt-2 text-sm text-ink-600">
-        Paste any address — we'll check its format, postal code, and geographic accuracy.
-        Get the standardized output with Address Line 1 & 2 ready to use.
+        Paste any address — we will check its format, postal code, and geographic accuracy.
+        Get the standardized output with Address Line 1 &amp; 2 ready to use.
       </p>
 
       {/* Input Card */}
