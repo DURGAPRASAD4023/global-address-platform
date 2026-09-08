@@ -2,11 +2,10 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Building2,
   Check,
-  CheckCircle2,
   Compass,
   Copy,
   ExternalLink,
@@ -18,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { CountrySelect } from "@/components/common/CountrySelect";
@@ -25,24 +25,130 @@ import { StatusPipeline } from "@/components/generator/StatusPipeline";
 import { api } from "@/lib/api";
 import type { Country } from "@/types/address";
 
+// ---------- Photon OSM Types ----------
+interface PhotonFeature {
+  type: "Feature";
+  geometry: { type: "Point"; coordinates: [number, number] };
+  properties: {
+    name?: string;
+    street?: string;
+    housenumber?: string;
+    postcode?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    country_code?: string;
+    district?: string;
+    locality?: string;
+    type?: string;
+    osm_type?: string;
+  };
+}
+
+interface PhotonResponse {
+  features: PhotonFeature[];
+}
+
+// Build a clean address from Photon feature
+function buildAddressFromPhoton(f: PhotonFeature): {
+  address_line_1: string;
+  address_line_2: string;
+  city: string;
+  region: string;
+  postal_code: string;
+  country: string;
+  country_code: string;
+  formatted_address: string;
+  coordinates: { latitude: number; longitude: number };
+  source: string;
+  landmark: string;
+} {
+  const p = f.properties;
+  const [lon, lat] = f.geometry.coordinates;
+
+  const houseNum = p.housenumber ?? "";
+  const street = p.street ?? "";
+  const name = p.name ?? "";
+
+  // Address Line 1: building name / house number + street
+  let line1 = "";
+  if (name && name !== street) {
+    line1 = houseNum ? `${name}, ${houseNum} ${street}`.trim() : name;
+  } else if (houseNum && street) {
+    line1 = `${houseNum} ${street}`;
+  } else if (street) {
+    line1 = street;
+  } else if (name) {
+    line1 = name;
+  }
+
+  // Address Line 2: locality / district
+  const line2 = p.district ?? p.locality ?? "";
+
+  const city = p.city ?? p.locality ?? p.district ?? "";
+  const region = p.state ?? "";
+  const postal = p.postcode ?? "";
+  const country = p.country ?? "";
+  const countryCode = (p.country_code ?? "").toUpperCase();
+
+  // Full formatted address
+  const parts = [line1, line2, city, region, postal, country].filter(Boolean);
+  const formatted = parts.join(", ");
+
+  return {
+    address_line_1: line1,
+    address_line_2: line2,
+    city,
+    region,
+    postal_code: postal,
+    country,
+    country_code: countryCode,
+    formatted_address: formatted,
+    coordinates: { latitude: lat, longitude: lon },
+    source: "photon_osm",
+    landmark: name !== street ? name : "",
+  };
+}
+
+// Format suggestion label
+function suggestionLabel(f: PhotonFeature): string {
+  const p = f.properties;
+  const parts: string[] = [];
+  if (p.name) parts.push(p.name);
+  if (p.street && p.name !== p.street) parts.push(p.street);
+  if (p.city) parts.push(p.city);
+  if (p.country) parts.push(p.country);
+  return parts.join(", ");
+}
+
 const PLACE_PRESETS = [
-  { label: "🇮🇳 Taj Mahal, Agra", query: "Taj Mahal, Agra", country: "IN" },
-  { label: "🇫🇷 Eiffel Tower, Paris", query: "Eiffel Tower, Paris", country: "FR" },
-  { label: "🇮🇳 Charminar, Hyderabad", query: "Charminar, Hyderabad", country: "IN" },
-  { label: "🇺🇸 White House, DC", query: "White House, Washington DC", country: "US" },
-  { label: "🇬🇧 Big Ben, London", query: "Big Ben, London", country: "GB" },
-  { label: "🇦🇪 Burj Khalifa, Dubai", query: "Burj Khalifa, Dubai", country: "AE" },
-  { label: "🇦🇺 Sydney Opera House", query: "Sydney Opera House", country: "AU" },
+  { label: "🕌 Taj Mahal", query: "Taj Mahal, Agra" },
+  { label: "🗼 Eiffel Tower", query: "Eiffel Tower, Paris" },
+  { label: "🕌 Charminar", query: "Charminar, Hyderabad" },
+  { label: "🏛️ White House", query: "White House, Washington DC" },
+  { label: "🕰️ Big Ben", query: "Big Ben, London" },
+  { label: "🏗️ Burj Khalifa", query: "Burj Khalifa, Dubai" },
+  { label: "🎭 Sydney Opera", query: "Sydney Opera House" },
 ];
 
 export default function GeneratePage() {
   const [mode, setMode] = useState<"generate" | "search">("generate");
   const [country, setCountry] = useState("GB");
   const [source, setSource] = useState<"live" | "seed">("live");
+
+  // Search states
   const [searchQuery, setSearchQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<PhotonFeature[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedResult, setSelectedResult] = useState<any>(null);
   const [searchCountry, setSearchCountry] = useState("");
+
   const [lastResult, setLastResult] = useState<any>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const searchRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const countriesQuery = useQuery({
     queryKey: ["countries"],
@@ -65,23 +171,12 @@ export default function GeneratePage() {
     },
   });
 
-  const searchMutation = useMutation({
-    mutationFn: () => api.searchPlace(searchQuery, searchCountry || undefined),
-    onSuccess: (data: any) => {
-      setLastResult(data);
-      toast.success(`Found verified physical address for "${searchQuery}"!`);
-    },
-    onError: (err: Error) => {
-      toast.error(`Search failed: ${err.message}`);
-    },
-  });
-
   const countries: Country[] = countriesQuery.data?.countries ?? [];
 
-  // Active result from either generation or search
-  const result = (generate.data ?? searchMutation.data ?? lastResult) as any;
+  // Active result
+  const result = (generate.data ?? selectedResult ?? lastResult) as any;
   const coordinates = result?.coordinates;
-  const isPending = generate.isPending || searchMutation.isPending;
+  const isPending = generate.isPending;
 
   const mapHref = coordinates
     ? `/map?lat=${encodeURIComponent(coordinates.latitude)}&lon=${encodeURIComponent(coordinates.longitude)}&label=${encodeURIComponent(result.formatted_address ?? result.address_line_1)}`
@@ -90,6 +185,73 @@ export default function GeneratePage() {
   const googleMapsUrl = coordinates
     ? `https://www.google.com/maps/search/?api=1&query=${coordinates.latitude},${coordinates.longitude}`
     : null;
+
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounced Photon search
+  function handleSearchInput(val: string) {
+    setSearchQuery(val);
+    setShowSuggestions(true);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (val.trim().length < 2) {
+      setSuggestions([]);
+      setSuggestionsLoading(false);
+      return;
+    }
+
+    setSuggestionsLoading(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: val, limit: "6", lang: "en" });
+        if (searchCountry) params.set("location_bias_scale", "0.2");
+        const res = await fetch(`https://photon.komoot.io/api/?${params}`);
+        const json: PhotonResponse = await res.json();
+        setSuggestions(json.features ?? []);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSuggestionsLoading(false);
+      }
+    }, 350);
+  }
+
+  function handleSelectSuggestion(feature: PhotonFeature) {
+    const addr = buildAddressFromPhoton(feature);
+    setSelectedResult(addr);
+    setLastResult(addr);
+    setSearchQuery(suggestionLabel(feature));
+    setShowSuggestions(false);
+    setSuggestions([]);
+    toast.success(`Address found: ${addr.city || addr.country}`);
+  }
+
+  function handlePresetSearch(query: string) {
+    setSearchQuery(query);
+    setShowSuggestions(false);
+    setSuggestionsLoading(true);
+    fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=1&lang=en`)
+      .then((r) => r.json())
+      .then((json: PhotonResponse) => {
+        if (json.features?.[0]) {
+          handleSelectSuggestion(json.features[0]);
+        } else {
+          toast.error("Place not found. Try a different search.");
+        }
+      })
+      .catch(() => toast.error("Search failed. Check your connection."))
+      .finally(() => setSuggestionsLoading(false));
+  }
 
   function handleCopy(text: string, label: string) {
     if (!text) return;
@@ -102,34 +264,30 @@ export default function GeneratePage() {
 
   function handleReset() {
     setLastResult(null);
+    setSelectedResult(null);
     generate.reset();
-    searchMutation.reset();
-  }
-
-  function applyPlacePreset(preset: (typeof PLACE_PRESETS)[0]) {
-    setSearchQuery(preset.query);
-    setSearchCountry(preset.country);
-    searchMutation.mutate();
+    setSearchQuery("");
+    setSuggestions([]);
   }
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-14">
-      {/* Header Tag */}
+      {/* Header */}
       <div className="flex items-center gap-2">
         <span className="rounded-full bg-teal-100 px-2.5 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider text-teal-800">
           Global Address Hub
         </span>
-        <span className="text-xs text-ink-400">• OpenStreetMap &amp; Curated Seeds</span>
+        <span className="text-xs text-ink-400">• OpenStreetMap & Curated Seeds</span>
       </div>
 
       <h1 className="mt-2 font-display text-4xl font-bold tracking-tight text-ink-950">
         Global Address Platform
       </h1>
       <p className="mt-2 text-sm text-ink-600">
-        Generate genuine international addresses with separated Address Line 1 and Line 2, or search any physical place worldwide.
+        Generate real international addresses or search any place worldwide — fully structured with Address Line 1 & 2.
       </p>
 
-      {/* Mode Switcher Tabs */}
+      {/* Mode Switcher */}
       <div className="mt-6 flex rounded-xl border border-ink-200 bg-ink-50/70 p-1">
         <button
           type="button"
@@ -153,14 +311,14 @@ export default function GeneratePage() {
           }`}
         >
           <Search className="h-4 w-4 text-teal-600" />
-          Global Place / Landmark Search
+          Global Place Search
         </button>
       </div>
 
       <div className="panel mt-4 space-y-6">
         {mode === "generate" ? (
           <>
-            {/* Source Selector Mode */}
+            {/* Source Selector */}
             <div>
               <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-ink-700">
                 Address Source Mode
@@ -176,19 +334,13 @@ export default function GeneratePage() {
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <Globe2
-                      className={`h-4 w-4 ${source === "live" ? "text-teal-700" : "text-ink-500"}`}
-                    />
-                    <span
-                      className={`text-sm font-semibold ${
-                        source === "live" ? "text-teal-950" : "text-ink-800"
-                      }`}
-                    >
+                    <Globe2 className={`h-4 w-4 ${source === "live" ? "text-teal-700" : "text-ink-500"}`} />
+                    <span className={`text-sm font-semibold ${source === "live" ? "text-teal-950" : "text-ink-800"}`}>
                       Live OpenStreetMap
                     </span>
                   </div>
                   <span className="mt-1 text-[11px] text-ink-500 leading-tight">
-                    Real-world shops, buildings &amp; streets fetched dynamically.
+                    Real-world shops, buildings & streets fetched dynamically.
                   </span>
                 </button>
 
@@ -202,25 +354,19 @@ export default function GeneratePage() {
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    <Landmark
-                      className={`h-4 w-4 ${source === "seed" ? "text-teal-700" : "text-ink-500"}`}
-                    />
-                    <span
-                      className={`text-sm font-semibold ${
-                        source === "seed" ? "text-teal-950" : "text-ink-800"
-                      }`}
-                    >
+                    <Landmark className={`h-4 w-4 ${source === "seed" ? "text-teal-700" : "text-ink-500"}`} />
+                    <span className={`text-sm font-semibold ${source === "seed" ? "text-teal-950" : "text-ink-800"}`}>
                       Curated Seeds
                     </span>
                   </div>
                   <span className="mt-1 text-[11px] text-ink-500 leading-tight">
-                    Curated public monuments, civic landmarks &amp; fast offline dataset.
+                    Curated public monuments, civic landmarks & fast offline dataset.
                   </span>
                 </button>
               </div>
             </div>
 
-            {/* Target Country Selector */}
+            {/* Country Selector */}
             <div>
               <label htmlFor="country" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-ink-700">
                 Target Country
@@ -258,7 +404,6 @@ export default function GeneratePage() {
                   type="button"
                   className="btn-secondary"
                   onClick={handleReset}
-                  title="Clear result"
                 >
                   <RefreshCw className="mr-2 h-4 w-4" />
                   Reset
@@ -267,73 +412,162 @@ export default function GeneratePage() {
             </div>
           </>
         ) : (
-          /* Global Place Search Mode */
+          /* Global Place Search Mode with Photon Autocomplete */
           <div className="space-y-4">
             <div>
-              <label htmlFor="place-search" className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-ink-700">
-                Search Place, Monument or Landmark
+              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-ink-700">
+                Search Any Place, Landmark or Address
               </label>
-              <div className="relative flex items-center">
-                <Search className="absolute left-3.5 h-4 w-4 text-ink-400" />
-                <input
-                  id="place-search"
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && searchQuery.trim()) {
-                      searchMutation.mutate();
-                    }
-                  }}
-                  placeholder="e.g. Taj Mahal, Eiffel Tower, Charminar, Times Square..."
-                  className="field pl-10 pr-24 text-sm font-medium"
-                />
-                <button
-                  type="button"
-                  disabled={searchMutation.isPending || !searchQuery.trim()}
-                  onClick={() => searchMutation.mutate()}
-                  className="absolute right-1.5 rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-bold text-white shadow-xs transition hover:bg-teal-800 disabled:opacity-50"
-                >
-                  {searchMutation.isPending ? "Searching…" : "Search"}
-                </button>
+
+              {/* Autocomplete Input */}
+              <div ref={searchRef} className="relative">
+                <div className="relative flex items-center">
+                  <Search className="absolute left-3.5 h-4 w-4 text-ink-400 pointer-events-none" />
+                  <input
+                    id="place-search"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => handleSearchInput(e.target.value)}
+                    onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                    placeholder="Type any place: Taj Mahal, Eiffel Tower, Times Square…"
+                    className="field pl-10 pr-10 text-sm font-medium"
+                    autoComplete="off"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchQuery("");
+                        setSuggestions([]);
+                        setShowSuggestions(false);
+                      }}
+                      className="absolute right-3 text-ink-400 hover:text-ink-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Suggestions Dropdown */}
+                {showSuggestions && (searchQuery.length >= 2) && (
+                  <div className="absolute left-0 right-0 top-full z-50 mt-1.5 overflow-hidden rounded-xl border border-ink-200 bg-white shadow-lg">
+                    {suggestionsLoading ? (
+                      <div className="flex items-center gap-2 px-4 py-3 text-xs text-ink-500">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-teal-600" />
+                        Searching OpenStreetMap…
+                      </div>
+                    ) : suggestions.length === 0 ? (
+                      <div className="px-4 py-3 text-xs text-ink-400">
+                        No places found. Try a different query.
+                      </div>
+                    ) : (
+                      <ul>
+                        {suggestions.map((feature, i) => {
+                          const p = feature.properties;
+                          const label = suggestionLabel(feature);
+                          return (
+                            <li key={i}>
+                              <button
+                                type="button"
+                                onClick={() => handleSelectSuggestion(feature)}
+                                className="flex w-full items-start gap-3 px-4 py-3 text-left text-xs transition hover:bg-teal-50 border-b border-ink-100 last:border-0"
+                              >
+                                <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-teal-600" />
+                                <div className="min-w-0">
+                                  <div className="font-semibold text-ink-900 truncate">
+                                    {p.name || p.street || label}
+                                  </div>
+                                  <div className="text-ink-400 truncate mt-0.5">
+                                    {[p.street, p.city, p.state, p.country]
+                                      .filter(Boolean)
+                                      .join(", ")}
+                                  </div>
+                                </div>
+                                {p.country_code && (
+                                  <span className="ml-auto shrink-0 text-[10px] font-bold text-ink-400 uppercase">
+                                    {p.country_code}
+                                  </span>
+                                )}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                    <div className="border-t border-ink-100 bg-ink-50/50 px-4 py-1.5 text-[10px] text-ink-400">
+                      Powered by{" "}
+                      <a
+                        href="https://photon.komoot.io"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold text-teal-700 hover:underline"
+                      >
+                        Photon / OpenStreetMap
+                      </a>{" "}
+                      — Free & Open Source
+                    </div>
+                  </div>
+                )}
               </div>
+
+              <p className="mt-1.5 text-[11px] text-ink-400">
+                Real-time suggestions from OpenStreetMap — 100% free, no API key needed.
+              </p>
             </div>
 
-            {/* Quick Place Presets */}
+            {/* Quick Presets */}
             <div>
               <span className="mb-2 flex items-center gap-1 text-xs font-semibold text-ink-600">
                 <Sparkles className="h-3.5 w-3.5 text-teal-600" />
-                Popular Places (1-Click Search):
+                Popular Landmarks (1-Click):
               </span>
               <div className="flex flex-wrap gap-1.5">
                 {PLACE_PRESETS.map((preset) => (
                   <button
                     key={preset.label}
                     type="button"
-                    onClick={() => applyPlacePreset(preset)}
-                    className="rounded-lg border border-ink-200 bg-white px-2.5 py-1 text-xs font-medium text-ink-700 transition hover:border-teal-400 hover:bg-teal-50 hover:text-teal-900"
+                    disabled={suggestionsLoading}
+                    onClick={() => handlePresetSearch(preset.query)}
+                    className="rounded-lg border border-ink-200 bg-white px-2.5 py-1 text-xs font-medium text-ink-700 transition hover:border-teal-400 hover:bg-teal-50 hover:text-teal-900 disabled:opacity-50"
                   >
                     {preset.label}
                   </button>
                 ))}
               </div>
             </div>
+
+            {suggestionsLoading && !showSuggestions && (
+              <div className="flex items-center gap-2 text-xs text-ink-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-teal-600" />
+                Fetching address…
+              </div>
+            )}
+
+            {result && (
+              <button
+                type="button"
+                className="btn-secondary text-xs"
+                onClick={handleReset}
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Clear Result
+              </button>
+            )}
           </div>
         )}
 
         {isPending && <StatusPipeline />}
 
-        {(generate.isError || searchMutation.isError) && (
+        {generate.isError && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900" role="alert">
-            {((generate.error || searchMutation.error) as Error)?.message ||
-              "Could not find or verify address for the specified request."}
+            {(generate.error as Error)?.message || "Could not generate address."}
           </div>
         )}
 
         {/* Address Result Display */}
         {result && (
-          <section className="space-y-5 border-t border-ink-200 pt-6" aria-label="Generated address result">
-            {/* Header row */}
+          <section className="space-y-5 border-t border-ink-200 pt-6" aria-label="Address result">
+            {/* Source badge + city */}
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -341,26 +575,17 @@ export default function GeneratePage() {
                     className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
                       result.source === "live_osm"
                         ? "bg-teal-100 text-teal-800 border border-teal-200"
-                        : result.source === "global_place_search"
+                        : result.source === "photon_osm"
                         ? "bg-sky-100 text-sky-800 border border-sky-200"
                         : "bg-ink-100 text-ink-800 border border-ink-200"
                     }`}
                   >
                     {result.source === "live_osm" ? (
-                      <>
-                        <Globe2 className="h-3 w-3" />
-                        Live OpenStreetMap
-                      </>
-                    ) : result.source === "global_place_search" ? (
-                      <>
-                        <Search className="h-3 w-3" />
-                        Global Place Match
-                      </>
+                      <><Globe2 className="h-3 w-3" />Live OpenStreetMap</>
+                    ) : result.source === "photon_osm" ? (
+                      <><Search className="h-3 w-3" />Photon OSM Search</>
                     ) : (
-                      <>
-                        <Landmark className="h-3 w-3" />
-                        Curated Civic Landmark
-                      </>
+                      <><Landmark className="h-3 w-3" />Curated Landmark</>
                     )}
                   </span>
 
@@ -372,7 +597,7 @@ export default function GeneratePage() {
                 </div>
 
                 <h2 className="mt-2 font-display text-2xl font-bold text-ink-950">
-                  {result.city ?? result.country}
+                  {result.city || result.country}
                 </h2>
               </div>
 
@@ -383,21 +608,19 @@ export default function GeneratePage() {
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn-secondary"
-                    title="Open in Google Maps"
                   >
                     <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                     Google Maps
                   </a>
                 )}
-
-                <Link href={mapHref} className="btn-secondary" title="Open in platform map">
+                <Link href={mapHref} className="btn-secondary">
                   <Map className="mr-1.5 h-3.5 w-3.5" />
                   View on map
                 </Link>
               </div>
             </div>
 
-            {/* Distinct Address Line 1 and Address Line 2 Cards */}
+            {/* Address Line 1 + Line 2 */}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-teal-200 bg-white p-4 shadow-xs">
                 <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-teal-800">
@@ -423,7 +646,7 @@ export default function GeneratePage() {
                 <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-teal-800">
                   <span className="flex items-center gap-1.5">
                     <Compass className="h-3.5 w-3.5 text-teal-600" />
-                    Address Line 2 (Unit / Locality)
+                    Address Line 2
                   </span>
                   <button
                     type="button"
@@ -440,7 +663,7 @@ export default function GeneratePage() {
               </div>
             </div>
 
-            {/* Complete Formatted Address Card */}
+            {/* Full Formatted Address */}
             <div className="rounded-xl border border-teal-200/80 bg-teal-50/40 p-4 shadow-xs">
               <div className="flex items-center justify-between border-b border-teal-100 pb-2">
                 <span className="flex items-center gap-1.5 text-xs font-bold text-teal-900">
@@ -461,15 +684,15 @@ export default function GeneratePage() {
               </p>
             </div>
 
-            {/* Component Summary Grid */}
+            {/* Component Grid */}
             <div className="grid gap-2.5 sm:grid-cols-2 text-xs">
               {[
                 ["Country", result.country],
                 ["City", result.city],
                 ["Region / State", result.region],
                 ["Postal Code", result.postal_code],
-                ["Coordinates", coordinates ? `${coordinates.latitude}, ${coordinates.longitude}` : "Unavailable"],
-                ["Map Verified", result.validation?.map_verified ? "✅ Verified" : "⚠️ Unverified"],
+                ["Coordinates", coordinates ? `${coordinates.latitude.toFixed(5)}, ${coordinates.longitude.toFixed(5)}` : "Unavailable"],
+                ["Map Verified", result.validation?.map_verified ? "✅ Verified" : result.source === "photon_osm" ? "✅ OSM Verified" : "⚠️ Unverified"],
               ].map(([lbl, val]) => (
                 <div key={lbl} className="flex items-center justify-between rounded-lg border border-ink-100 bg-white px-3 py-2">
                   <span className="font-semibold text-ink-500">{lbl}</span>
