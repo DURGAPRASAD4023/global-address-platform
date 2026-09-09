@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from app.core.logging import get_logger
+from app.countries.common.regions import expand_region
 from app.data.loader import get_country_seeds
 
 logger = get_logger(__name__)
@@ -164,7 +165,8 @@ class LiveAddressSource:
             or addr.get("village")
             or addr.get("suburb")
         )
-        region = addr.get("state") or addr.get("county") or addr.get("province") or addr.get("state_district")
+        raw_region = addr.get("state") or addr.get("county") or addr.get("province") or addr.get("state_district")
+        region = expand_region(cc, raw_region) if raw_region else None
         postal_code = addr.get("postcode")
 
         suburb = (

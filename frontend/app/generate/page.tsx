@@ -49,6 +49,43 @@ interface PhotonResponse {
   features: PhotonFeature[];
 }
 
+const US_STATE_EXPANSIONS: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", FL: "Florida", GA: "Georgia",
+  HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa",
+  KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri",
+  MT: "Montana", NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey",
+  NM: "New Mexico", NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio",
+  OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina",
+  SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont",
+  VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+  DC: "District of Columbia",
+};
+
+const CA_PROV_EXPANSIONS: Record<string, string> = {
+  AB: "Alberta", BC: "British Columbia", MB: "Manitoba", NB: "New Brunswick",
+  NL: "Newfoundland and Labrador", NS: "Nova Scotia", NT: "Northwest Territories",
+  NU: "Nunavut", ON: "Ontario", PE: "Prince Edward Island", QC: "Quebec",
+  SK: "Saskatchewan", YT: "Yukon",
+};
+
+const AU_STATE_EXPANSIONS: Record<string, string> = {
+  ACT: "Australian Capital Territory", NSW: "New South Wales", NT: "Northern Territory",
+  QLD: "Queensland", SA: "South Australia", TAS: "Tasmania", VIC: "Victoria", WA: "Western Australia",
+};
+
+function expandClientRegion(region: string, countryCode: string): string {
+  if (!region) return "";
+  const upper = region.trim().toUpperCase();
+  const cc = countryCode.trim().toUpperCase();
+  if (cc === "US" && US_STATE_EXPANSIONS[upper]) return US_STATE_EXPANSIONS[upper];
+  if (cc === "CA" && CA_PROV_EXPANSIONS[upper]) return CA_PROV_EXPANSIONS[upper];
+  if (cc === "AU" && AU_STATE_EXPANSIONS[upper]) return AU_STATE_EXPANSIONS[upper];
+  if (US_STATE_EXPANSIONS[upper]) return US_STATE_EXPANSIONS[upper];
+  return region;
+}
+
 // Build a clean address from Photon feature
 function buildAddressFromPhoton(f: PhotonFeature): {
   address_line_1: string;
@@ -86,10 +123,11 @@ function buildAddressFromPhoton(f: PhotonFeature): {
   const line2 = p.district ?? p.locality ?? "";
 
   const city = p.city ?? p.locality ?? p.district ?? "";
-  const region = p.state ?? "";
+  const countryCode = (p.country_code ?? "").toUpperCase();
+  const rawRegion = p.state ?? "";
+  const region = expandClientRegion(rawRegion, countryCode);
   const postal = p.postcode ?? "";
   const country = p.country ?? "";
-  const countryCode = (p.country_code ?? "").toUpperCase();
 
   // Full formatted address
   const parts = [line1, line2, city, region, postal, country].filter(Boolean);

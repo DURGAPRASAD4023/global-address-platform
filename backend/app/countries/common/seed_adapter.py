@@ -17,6 +17,7 @@ from app.countries.base.schemas import (
     ValidationStatus,
 )
 from app.core.exceptions import AppError
+from app.countries.common.regions import expand_region
 from app.data.loader import get_country_seeds
 from app.services.map_service import MapService
 
@@ -210,6 +211,10 @@ class SeedBackedAdapter(CountryAddressAdapter):
                     break
             if matched:
                 continue
+            exp = expand_region(self.country_code, t_clean)
+            if exp and (exp != t_clean or any(exp.lower() == (sr or "").lower() for sr in seed_regions)):
+                region = exp
+                continue
             rem_tokens.append(t_clean)
 
         # 7. Parse Street and House Number from line 1
@@ -273,7 +278,7 @@ class SeedBackedAdapter(CountryAddressAdapter):
             street=street,
             unit=unit,
             city=city,
-            region=region,
+            region=expand_region(self.country_code, region) if region else None,
             postal_code=postal,
             landmark=landmark,
         )
@@ -357,9 +362,7 @@ class SeedBackedAdapter(CountryAddressAdapter):
             postal = re.sub(r"\s+", " ", postal.upper()).strip()
 
         city = title_preserve_postal(address.city) if address.city else None
-        region = address.region.upper() if address.region and len(address.region) <= 3 else (
-            title_preserve_postal(address.region) if address.region else None
-        )
+        region = expand_region(self.country_code, address.region)
 
         normalized = AddressComponents(
             country=self.country_name,
