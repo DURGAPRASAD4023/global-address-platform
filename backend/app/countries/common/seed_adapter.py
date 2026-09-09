@@ -403,15 +403,30 @@ class SeedBackedAdapter(CountryAddressAdapter):
     def _format_locality_line(self, address: AddressComponents) -> str | None:
         return None
 
+    _recent_seed_indices: dict[str, list[int]] = {}
+
     async def generate(self) -> GeneratedAddress:
-        seed = random.choice(self._seeds())
+        seeds = self._seeds()
+        recent = self._recent_seed_indices.setdefault(self.country_code, [])
+        available = [i for i in range(len(seeds)) if i not in recent]
+        if not available:
+            recent.clear()
+            available = list(range(len(seeds)))
+
+        chosen_idx = random.choice(available)
+        recent.append(chosen_idx)
+        if len(recent) > max(1, len(seeds) - 1):
+            recent.pop(0)
+
+        seed = seeds[chosen_idx]
         line2 = seed.get("address_line_2")
         if not line2:
             notes = seed.get("notes")
-            if notes and notes != seed.get("address_line_1"):
+            if notes and notes != seed.get("address_line_1") and random.random() > 0.4:
                 line2 = notes
             else:
-                line2 = random.choice(["Suite 100", "Building A", "Floor 2", "Wing B", "Level 1"])
+                unit_type = random.choice(["Suite", "Floor", "Building", "Unit", "Level"])
+                line2 = f"{unit_type} {random.randint(101, 880)}"
 
         components = AddressComponents(
             country=self.country_name,
