@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # prestart.sh — Run Alembic migrations with retry logic.
-# Render services may start before the database DNS is fully resolvable,
-# so we retry a few times with backoff.
+# If the database is unreachable, log a warning and let the server start
+# so Render detects the open port and doesn't restart-loop the service.
 
-set -e
-
-MAX_RETRIES=5
+MAX_RETRIES=3
 RETRY_DELAY=3
 
 # Log the database host being targeted (mask credentials).
@@ -13,12 +11,13 @@ if [ -n "$DATABASE_URL" ]; then
     DB_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@([^:/]+).*|\1|')
     echo "Database host: $DB_HOST"
 else
-    echo "WARNING: DATABASE_URL is not set!"
+    echo "WARNING: DATABASE_URL is not set! Skipping migrations."
+    exit 0
 fi
 
 for i in $(seq 1 $MAX_RETRIES); do
     echo "Running Alembic migrations (attempt $i/$MAX_RETRIES)..."
-    if alembic upgrade head; then
+    if alembic upgrade head 2>&1; then
         echo "Migrations completed successfully."
         exit 0
     fi
@@ -29,6 +28,7 @@ for i in $(seq 1 $MAX_RETRIES); do
     fi
 done
 
-echo "ERROR: Migrations failed after $MAX_RETRIES attempts."
-exit 1
+echo "WARNING: Migrations failed after $MAX_RETRIES attempts. Starting server anyway."
+echo "The app will start but database-dependent endpoints will not work until DATABASE_URL is correctly configured."
+exit 0
 

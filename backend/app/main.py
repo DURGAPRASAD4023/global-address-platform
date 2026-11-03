@@ -53,5 +53,14 @@ async def live() -> dict[str, str]:
 
 @app.get("/health/ready", tags=["health"])
 async def ready() -> dict[str, str]:
-    # Full readiness (DB/Redis) is exposed under /api/v1/health/ready
-    return {"status": "ready"}
+    """Check readiness including database connectivity."""
+    from sqlalchemy import text
+
+    from app.db.session import engine
+
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return {"status": "ready", "database": "connected"}
+    except Exception:
+        return {"status": "degraded", "database": "unavailable"}
