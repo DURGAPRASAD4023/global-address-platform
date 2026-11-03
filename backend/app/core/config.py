@@ -2,13 +2,13 @@
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     geocoding_provider: str = "nominatim"
     geocoding_api_key: str = ""
+    geoapify_api_key: str = ""
     geocoding_user_agent: str = "GlobalAddressPlatform/0.1.0 (dev)"
     geocoding_cache_ttl_seconds: int = 86400
     generation_max_retries: int = 5
@@ -42,6 +43,22 @@ class Settings(BaseSettings):
 
     max_address_input_chars: int = 4000
     max_bulk_size: int = 100
+
+    @model_validator(mode="after")
+    def normalise_database_url(self) -> "Settings":
+        """Ensure the DATABASE_URL uses the asyncpg driver.
+
+        Render and other PaaS providers set DATABASE_URL with the
+        ``postgresql://`` scheme.  SQLAlchemy's async engine requires
+        ``postgresql+asyncpg://``.  This validator transparently rewrites
+        the scheme so the app works without manual env-var editing.
+        """
+        url = self.database_url
+        if url.startswith("postgres://"):
+            self.database_url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://"):
+            self.database_url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:
