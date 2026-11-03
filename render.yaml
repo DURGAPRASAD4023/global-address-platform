@@ -1,0 +1,39 @@
+# render.yaml — Render Blueprint for Global Address Platform
+# This file auto-provisions a PostgreSQL database and wires the
+# DATABASE_URL environment variable to the web service.
+
+databases:
+  - name: global-address-db
+    plan: free
+    databaseName: global_address
+    user: gap
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: global-address-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: global-address-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GEOCODING_PROVIDER
+        value: nominatim
+      - key: GEOAPIFY_API_KEY
+        sync: false
+      - key: GEOCODING_USER_AGENT
+        value: "GlobalAddressPlatform/0.1.0 (production)"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: REDIS_URL
+        value: ""

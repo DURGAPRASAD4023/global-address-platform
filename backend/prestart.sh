@@ -8,6 +8,14 @@ set -e
 MAX_RETRIES=5
 RETRY_DELAY=3
 
+# Log the database host being targeted (mask credentials).
+if [ -n "$DATABASE_URL" ]; then
+    DB_HOST=$(echo "$DATABASE_URL" | sed -E 's|.*@([^:/]+).*|\1|')
+    echo "Database host: $DB_HOST"
+else
+    echo "WARNING: DATABASE_URL is not set!"
+fi
+
 for i in $(seq 1 $MAX_RETRIES); do
     echo "Running Alembic migrations (attempt $i/$MAX_RETRIES)..."
     if alembic upgrade head; then
@@ -23,3 +31,4 @@ done
 
 echo "ERROR: Migrations failed after $MAX_RETRIES attempts."
 exit 1
+
